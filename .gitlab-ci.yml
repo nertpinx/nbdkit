@@ -1,0 +1,72 @@
+variables:
+  GIT_DEPTH: 100
+
+stages:
+  - containers
+  - builds
+
+.script_variables: &script_variables |
+  export MAKEFLAGS="-j $(getconf _NPROCESSORS_ONLN)"
+  export CCACHE_BASEDIR="$(pwd)"
+  export CCACHE_DIR="$CCACHE_BASEDIR/ccache"
+  export CCACHE_MAXSIZE="500M"
+  export PATH="$CCACHE_WRAPPERSDIR:$PATH"
+
+# Common templates
+
+.container_job:
+  image: docker:stable
+  stage: containers
+  needs: []
+  services:
+    - docker:dind
+  rules:
+    - if: "$TEMPORARILY_DISABLED"
+      allow_failure: true
+    - when: on_success
+  before_script:
+    - export TAG="$CI_REGISTRY_IMAGE/ci-$NAME:latest"
+    - export COMMON_TAG="$CI_REGISTRY/libvirt/libvirt/ci-$NAME:latest"
+    - docker info
+    - docker login registry.gitlab.com -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
+  script:
+    - docker pull "$TAG" || docker pull "$COMMON_TAG" || true
+    - docker build --cache-from "$TAG" --cache-from "$COMMON_TAG" --tag "$TAG" -f "ci/containers/ci-$NAME.Dockerfile" ci/containers
+    - docker push "$TAG"
+  after_script:
+    - docker logout
+
+.native_build_job:
+  stage: builds
+  image: $CI_REGISTRY_IMAGE/ci-$NAME:latest
+  cache:
+    paths:
+      - ccache/
+    key: "$CI_JOB_NAME"
+  before_script:
+    - *script_variables
+  script:
+    - autoreconf -if
+    - ./configure
+    - $MAKE
+    - $MAKE check
+
+# Native container build jobs
+
+x64-centos-7-container:
+  extends: .container_job
+  variables:
+    NAME: centos-7
+
+# Cross-build containers build jobs
+
+x64-centos-7:
+  extends: .native_build_job
+  needs:
+    - x64-centos-7-container
+  variables:
+    NAME: centos-7
+    # meson dist fails on CentOS 7 because of old git that fails to clone
+    # from shallow git repository which is done when running meson dist
+    DIST: skip
+    RPM: skip
